@@ -63,7 +63,7 @@ def test_health_reports_status_without_exposing_secrets(make_client):
     body = response.json()
     assert response.status_code == 200 and body["status"] == "ok"
     assert isinstance(body["llm"]["configured"], bool) and isinstance(body["research"]["configured"], bool)
-    assert body["llm"]["provider"] == "gemini"
+    assert body["llm"]["provider"] == "groq"
     assert "api_key" not in response.text.lower() and "aiza" not in response.text.lower()
 
 
@@ -181,7 +181,7 @@ def test_llm_failures_map_to_clear_status_codes(make_client, error, status, code
 
 def test_missing_api_key_message_is_actionable(make_client):
     response = make_client(build_service(llm=FakeLLM(configured=False))).post("/link-analysis", json=VALID)
-    assert response.status_code == 503 and "GEMINI_API_KEY" in response.json()["error"]["message"]
+    assert response.status_code == 503 and "GROQ_API_KEY" in response.json()["error"]["message"]
 
 
 def test_llm_rate_limit_exposes_retry_after(make_client):

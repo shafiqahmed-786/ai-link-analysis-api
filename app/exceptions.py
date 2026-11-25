@@ -143,7 +143,7 @@ class LLMNotConfiguredError(LLMError):
     code = "llm_not_configured"
     default_message = (
         "The language model is not configured. Set the provider API key "
-        "(for example GEMINI_API_KEY) in the server environment."
+        "(for example GROQ_API_KEY) in the server environment."
     )
 
 

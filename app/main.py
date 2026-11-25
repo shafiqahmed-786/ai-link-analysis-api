@@ -130,7 +130,7 @@ def create_app() -> FastAPI:
         )
         if not settings.has_llm_key:
             logger.warning(
-                "No LLM API key configured: POST /link-analysis will return 503 until GEMINI_API_KEY is set."
+                "No LLM API key configured: POST /link-analysis will return 503 until GROQ_API_KEY is set."
             )
         yield
 

@@ -1,4 +1,4 @@
-"""LLM layer: retries, validation/repair, schema handling and the Gemini adapter.
+"""LLM layer: retries, validation/repair, schema handling and the Groq adapter.
 
 No real API is called: a scripted fake provider or ``httpx.MockTransport`` stands in.
 """
@@ -191,79 +191,104 @@ def test_extract_json_rejects_non_json(text):
 
 
 # --------------------------------------------------------------------------- #
-# Gemini response / error parsing
+# Groq response / error parsing
 # --------------------------------------------------------------------------- #
-def test_gemini_response_parsing_joins_text_and_counts_thinking_as_output():
+def test_groq_response_parsing_extracts_text_and_counts_reasoning_as_output():
     data = {
-        "candidates": [{"content": {"parts": [{"text": "hidden", "thought": True}, {"text": '{"n"'}, {"text": ": 5}"}]}, "finishReason": "STOP"}],
-        "usageMetadata": {"promptTokenCount": 1200, "candidatesTokenCount": 800, "thoughtsTokenCount": 300},
+        "choices": [{"message": {"role": "assistant", "content": '{"n": 5}'}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 800,
+            "total_tokens": 2000,
+            "completion_tokens_details": {"reasoning_tokens": 300},
+        },
     }
-    parsed = llm.parse_gemini_response(data)
-    assert parsed.text == '{"n": 5}' and parsed.finish_reason == "STOP"
-    assert parsed.usage == llm.LLMUsage(1200, 1100, 300)  # thinking tokens are billed as output
+    parsed = llm.parse_groq_response(data)
+    assert parsed.text == '{"n": 5}' and parsed.finish_reason == "stop"
+    assert parsed.usage == llm.LLMUsage(1200, 800, 300)  # reasoning tokens are billed as output
 
 
-@pytest.mark.parametrize("data", [{"promptFeedback": {"blockReason": "SAFETY"}}, {"candidates": []}, {}])
-def test_gemini_blocked_or_empty_responses_are_invalid(data):
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"choices": []},
+        {},
+        {"choices": [{"message": {"content": None, "refusal": "I cannot help with that."}}]},
+        {"choices": [{"message": {"content": ""}}]},
+    ],
+)
+def test_groq_empty_or_refused_responses_are_invalid(data):
     with pytest.raises(LLMInvalidResponseError):
-        llm.parse_gemini_response(data)
+        llm.parse_groq_response(data)
 
 
-def test_gemini_error_mapping():
-    err = llm.map_gemini_error
+def test_groq_error_mapping():
+    err = llm.map_groq_error
     assert isinstance(err(401, "", {}), LLMAuthError) and isinstance(err(403, "", {}), LLMAuthError)
-    invalid_key = json.dumps({"error": {"message": "API key not valid. Please pass a valid API key."}})
-    assert isinstance(err(400, invalid_key, {}), LLMAuthError)  # Google reports bad keys as HTTP 400
     limited = err(429, "", {"Retry-After": "7"})
     assert isinstance(limited, LLMRateLimitError) and limited.retry_after == 7.0
     assert isinstance(err(400, json.dumps({"error": {"message": "Invalid JSON schema"}}), {}), llm.SchemaRejectedError)
+    assert isinstance(err(400, json.dumps({"error": {"message": "bad request"}}), {}), LLMProviderError)
     assert not err(404, "", {}).retryable and err(503, "", {}).retryable and err(500, "", {}).retryable
     assert not err(418, "", {}).retryable
     assert "SECRET-UPSTREAM-BODY" not in err(500, "SECRET-UPSTREAM-BODY", {}).message  # never shown to API users
 
 
 # --------------------------------------------------------------------------- #
-# Gemini adapter over a mocked transport
+# Groq adapter over a mocked transport
 # --------------------------------------------------------------------------- #
-def gemini_reply(payload, *, status=200):
+def groq_reply(payload, *, status=200):
     body = {
-        "candidates": [{"content": {"parts": [{"text": json.dumps(payload)}]}, "finishReason": "STOP"}],
-        "usageMetadata": {"promptTokenCount": 9000, "candidatesTokenCount": 3500, "thoughtsTokenCount": 500},
+        "choices": [{"message": {"role": "assistant", "content": json.dumps(payload)}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 9000, "completion_tokens": 3500, "total_tokens": 12500},
     }
     return httpx.Response(status, json=body)
 
 
-async def test_gemini_request_shape_and_api_key_handling():
+async def test_groq_request_shape_and_api_key_handling():
     seen: list[httpx.Request] = []
 
     def handler(request):
         seen.append(request)
-        return gemini_reply(make_llm_payload())
+        return groq_reply(make_llm_payload())
 
-    settings = make_settings(gemini_api_key="test-key-not-real", llm_model="", llm_thinking_level="low")
-    service = llm.LLMService(settings, llm.GeminiProvider(settings, transport=httpx.MockTransport(handler)))
+    settings = make_settings(groq_api_key="test-key-not-real", llm_model="")
+    service = llm.LLMService(settings, llm.GroqProvider(settings, transport=httpx.MockTransport(handler)))
     result = await service.generate_structured(system="SYS", user="USR", response_model=LLMAnalysis)
 
     request = seen[0]
-    assert request.url.path == "/v1beta/models/gemini-3.8-flash:generateContent"  # default model
-    assert request.headers["x-goog-api-key"] == "test-key-not-real"
+    assert request.url.path == "/openai/v1/chat/completions"
+    assert request.headers["authorization"] == "Bearer test-key-not-real"
     assert "test-key-not-real" not in str(request.url)  # key never appears in a URL (and so never in logs)
     body = json.loads(request.content)
-    assert body["systemInstruction"]["parts"][0]["text"] == "SYS"
-    assert body["contents"][0]["parts"][0]["text"] == "USR"
-    config = body["generationConfig"]
-    assert config["responseMimeType"] == "application/json" and "responseJsonSchema" in config
-    assert config["thinkingConfig"] == {"thinkingLevel": "low"} and "temperature" not in config
+    assert body["model"] == "openai/gpt-oss-120b"  # default model
+    assert body["messages"][0] == {"role": "system", "content": "SYS"}
+    assert body["messages"][1] == {"role": "user", "content": "USR"}
+    assert "max_completion_tokens" in body and "temperature" not in body
+    response_format = body["response_format"]
+    assert response_format["type"] == "json_schema" and response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"]  # schema derived from the Pydantic model
 
     assert result.data.brand.name == "Acme Cloud"
-    assert result.usage == llm.LLMUsage(9000, 4000, 500) and result.model == "gemini-3.8-flash"
+    assert result.usage == llm.LLMUsage(9000, 3500, None) and result.model == "openai/gpt-oss-120b"
 
 
-async def test_thinking_level_and_temperature_are_configurable_or_omitted():
-    settings = make_settings(llm_thinking_level="", llm_temperature=0.4, llm_model="custom-model")
-    payload = llm.GeminiProvider(settings).build_payload("s", "u", None)
-    assert "thinkingConfig" not in payload["generationConfig"] and "responseJsonSchema" not in payload["generationConfig"]
-    assert payload["generationConfig"]["temperature"] == 0.4
+async def test_temperature_is_configurable_or_omitted():
+    settings = make_settings(llm_temperature=0.4, llm_model="custom-model")
+    payload = llm.GroqProvider(settings).build_payload("s", "u", None)
+    assert payload["temperature"] == 0.4
+    assert payload["response_format"] == {"type": "json_object"}  # no schema -> JSON mode
+    default = llm.GroqProvider(make_settings(llm_model="custom-model")).build_payload("s", "u", None)
+    assert "temperature" not in default
+
+
+def test_make_strict_schema_enforces_required_and_additional_properties():
+    schema = llm.build_json_schema(LLMAnalysis)
+    strict = llm.make_strict_schema(schema)
+    flat = json.dumps(strict)
+    assert '"minItems"' not in flat and '"maxItems"' not in flat  # unsupported keywords removed for strict mode
+    assert '"additionalProperties": false' in flat
+    assert set(strict["required"]) == set(strict["properties"])  # every field is required
 
 
 @pytest.mark.parametrize(
@@ -271,7 +296,7 @@ async def test_thinking_level_and_temperature_are_configurable_or_omitted():
     [(lambda: httpx.Response(401, json={"error": {"message": "bad key"}}), LLMAuthError),
      (lambda: httpx.Response(404, json={}), LLMProviderError)],
 )
-async def test_gemini_non_retryable_http_errors(make_response, expected):
+async def test_groq_non_retryable_http_errors(make_response, expected):
     calls = []
 
     def handler(request):
@@ -279,13 +304,13 @@ async def test_gemini_non_retryable_http_errors(make_response, expected):
         return make_response()
 
     settings = make_settings()
-    service, _ = make_service(llm.GeminiProvider(settings, transport=httpx.MockTransport(handler)))
+    service, _ = make_service(llm.GroqProvider(settings, transport=httpx.MockTransport(handler)))
     with pytest.raises(expected):
         await service.generate_structured(system="s", user="u", response_model=Toy)
     assert len(calls) == 1
 
 
-async def test_gemini_rate_limit_is_retried_then_surfaced():
+async def test_groq_rate_limit_is_retried_then_surfaced():
     calls = []
 
     def handler(request):
@@ -293,25 +318,25 @@ async def test_gemini_rate_limit_is_retried_then_surfaced():
         return httpx.Response(429, headers={"retry-after": "1"}, json={"error": {"message": "quota"}})
 
     settings = make_settings(llm_max_retries=2)
-    service, sleeps = make_service(llm.GeminiProvider(settings, transport=httpx.MockTransport(handler)))
+    service, sleeps = make_service(llm.GroqProvider(settings, transport=httpx.MockTransport(handler)))
     with pytest.raises(LLMRateLimitError):
         await service.generate_structured(system="s", user="u", response_model=Toy)
     assert len(calls) == 3 and sleeps == [1.0, 1.0]
 
 
-async def test_gemini_timeout_maps_to_llm_timeout():
+async def test_groq_timeout_maps_to_llm_timeout():
     def handler(request):
         raise httpx.ReadTimeout("slow")
 
     settings = make_settings(llm_max_retries=0)
-    service, _ = make_service(llm.GeminiProvider(settings, transport=httpx.MockTransport(handler)), llm_max_retries=0)
+    service, _ = make_service(llm.GroqProvider(settings, transport=httpx.MockTransport(handler)), llm_max_retries=0)
     with pytest.raises(LLMTimeoutError):
         await service.generate_structured(system="s", user="u", response_model=Toy)
 
 
-async def test_gemini_invalid_json_body_is_a_provider_error():
+async def test_groq_invalid_json_body_is_a_provider_error():
     settings = make_settings(llm_max_retries=0)
-    provider = llm.GeminiProvider(settings, transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"<html>oops")))
+    provider = llm.GroqProvider(settings, transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"<html>oops")))
     with pytest.raises(LLMProviderError):
         await provider.generate(system="s", user="u", json_schema=None)
 
@@ -320,17 +345,17 @@ async def test_gemini_invalid_json_body_is_a_provider_error():
 # Configuration errors
 # --------------------------------------------------------------------------- #
 def test_missing_api_key_gives_an_actionable_error():
-    service = llm.LLMService(make_settings(gemini_api_key=None))
-    with pytest.raises(LLMNotConfiguredError, match="GEMINI_API_KEY"):
+    service = llm.LLMService(make_settings(groq_api_key=None))
+    with pytest.raises(LLMNotConfiguredError, match="GROQ_API_KEY"):
         service.ensure_configured()
 
 
 def test_unsupported_provider_is_rejected_with_the_supported_list():
     service = llm.LLMService(make_settings(llm_provider="openai"))
-    with pytest.raises(LLMNotConfiguredError, match="not supported.*gemini"):
+    with pytest.raises(LLMNotConfiguredError, match="not supported.*groq"):
         service.ensure_configured()
 
 
 def test_model_can_be_changed_through_configuration():
-    provider = llm.build_provider(make_settings(llm_model="gemini-3.5-flash-lite"))
-    assert provider.model == "gemini-3.5-flash-lite"
+    provider = llm.build_provider(make_settings(llm_model="openai/gpt-oss-20b"))
+    assert provider.model == "openai/gpt-oss-20b"

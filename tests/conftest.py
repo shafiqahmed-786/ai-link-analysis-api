@@ -43,7 +43,7 @@ such as finance and healthcare, and we operate with fixed-scope engagements and 
 def make_settings(**overrides: Any) -> Settings:
     """Settings that ignore any local .env file and the real environment."""
     values: dict[str, Any] = {
-        "gemini_api_key": "test-key-not-real",
+        "groq_api_key": "test-key-not-real",
         "tavily_api_key": None,
         "llm_max_retries": 2,
         "cache_ttl_seconds": 0,

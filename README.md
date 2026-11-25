@@ -48,7 +48,7 @@ LLM present guesses — competitors in particular — as facts.
 
 ## Technology stack
 
-Python 3.11+ · FastAPI · Pydantic v2 / pydantic-settings · HTTPX · BeautifulSoup4 + lxml · Google Gemini (REST) ·
+Python 3.11+ · FastAPI · Pydantic v2 / pydantic-settings · HTTPX · BeautifulSoup4 + lxml · Groq (OpenAI-compatible REST) ·
 Tavily (optional) · pytest · Docker · Render.
 
 ## Architecture
@@ -63,7 +63,7 @@ flowchart LR
     WE --> HP[HTML parser<br/>clean · dedupe · JSON-LD]
     AS -. optional .-> CS[CompetitorService<br/>Tavily search]
     AS --> LLM[LLMService<br/>retry · validate · repair]
-    LLM --> GP[Gemini provider<br/>REST + JSON Schema]
+    LLM --> GP[Groq provider<br/>OpenAI-compatible + JSON Schema]
     CS --> PV
     LLM --> PV[Provenance checks<br/>competitors · services · SEO facts]
     PV --> OUT[AnalysisResponse<br/>5 sections + metadata]
@@ -82,7 +82,7 @@ ai-link-analysis-api/
 │   ├── services/
 │   │   ├── website_extractor.py   # SSRF-safe fetching (pinning, redirects, limits)
 │   │   ├── html_parser.py         # Pure HTML -> structured data (no network)
-│   │   ├── llm_service.py         # Provider abstraction, Gemini adapter, retry/repair
+│   │   ├── llm_service.py         # Provider abstraction, Groq adapter, retry/repair
 │   │   ├── competitor_service.py  # Optional Tavily research + provenance enforcement
 │   │   └── analysis_service.py    # Orchestration, prompts, assembly, caching
 │   └── utils/
@@ -213,7 +213,7 @@ curl -X POST http://localhost:4000/link-analysis \
     "analyzed_at": "2026-11-25T10:00:00Z",
     "cached": false,
     "extraction": { "final_url": "https://example.com", "status_code": 200, "content_type": "text/html", "redirects": [], "bytes_fetched": 0, "fetch_ms": 0, "text_chars": 0, "text_truncated": false, "content_quality": "full", "warnings": [] },
-    "llm": { "provider": "gemini", "model": "gemini-3.8-flash", "input_tokens": null, "output_tokens": null, "thinking_tokens": null, "attempts": 1, "repaired": false, "latency_ms": 0, "estimated_cost_usd": null, "cost_note": "…" },
+    "llm": { "provider": "groq", "model": "openai/gpt-oss-120b", "input_tokens": null, "output_tokens": null, "thinking_tokens": null, "attempts": 1, "repaired": false, "latency_ms": 0, "estimated_cost_usd": null, "cost_note": "…" },
     "research": { "provider": null, "status": "unavailable", "queries": [], "sources": [], "note": "External research is not configured (set TAVILY_API_KEY to enable it)." },
     "limitations": ["…"]
   }
@@ -247,9 +247,9 @@ Settings come from environment variables or `.env` (never commit `.env`; `.env.e
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | — | **Required** for analysis. Create one at <https://aistudio.google.com/api-keys> |
-| `LLM_PROVIDER` / `LLM_MODEL` | `gemini` / `gemini-3.8-flash` | Provider and model (blank model = provider default) |
-| `LLM_THINKING_LEVEL` | `low` | `low`/`medium`/`high`; blank omits it (for models without thinking levels) |
+| `GROQ_API_KEY` | — | **Required** for analysis. Create one at <https://console.groq.com/keys> |
+| `LLM_PROVIDER` / `LLM_MODEL` | `groq` / `openai/gpt-oss-120b` | Provider and model (blank model = provider default) |
+| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq OpenAI-compatible API base URL |
 | `LLM_TIMEOUT` · `LLM_MAX_RETRIES` · `LLM_MAX_OUTPUT_TOKENS` | `90` · `2` · `8192` | LLM call limits |
 | `LLM_PROMPT_MAX_CHARS` | `24000` | Page text sent to the LLM (cost control) |
 | `LLM_INPUT_PRICE_PER_MTOK` / `LLM_OUTPUT_PRICE_PER_MTOK` | blank | Optional; enables `estimated_cost_usd` in metadata |
@@ -270,7 +270,7 @@ uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-4000}   # production form
 ```
 
 * API: <http://localhost:4000> · Docs: <http://localhost:4000/docs> · Health: <http://localhost:4000/health>
-* Without `GEMINI_API_KEY` the server starts normally; `POST /link-analysis` returns `503 llm_not_configured` with instructions.
+* Without `GROQ_API_KEY` the server starts normally; `POST /link-analysis` returns `503 llm_not_configured` with instructions.
 
 ## Running tests
 
@@ -280,7 +280,7 @@ pytest
 
 Tests mock **all** external calls (`httpx.MockTransport`, fake DNS resolver, fake LLM/research); they need no network, no API keys and
 make no paid calls. They cover URL/SSRF validation, extraction (valid/missing/empty/invalid HTML, HTTP failure, timeout, oversize,
-unsupported type, unsafe redirects, DNS rebinding), the LLM layer (retry, backoff, repair, schema fallback, Gemini request shape),
+unsupported type, unsafe redirects, DNS rebinding), the LLM layer (retry, backoff, repair, schema fallback, Groq request shape),
 competitor provenance, the five-section output, prompt hardening, caching, and every API error mapping.
 
 ## Verification status
@@ -295,24 +295,24 @@ competitor provenance, the five-section output, prompt hardening, caching, and e
 | Server start and `/health` | Server started locally; `/health` returned `200` |
 | `/docs` | Verified locally; returned `200` |
 | Screenshots | Not yet captured |
-| Live Gemini call (request/response shape, `thinkingLevel`, schema acceptance) | **Not yet run** — needs your `GEMINI_API_KEY` |
+| Live Groq call (request/response shape, strict JSON Schema acceptance) | **Not yet run** — needs your `GROQ_API_KEY` |
 | Docker build, Render deployment, public URL | **Not yet done** |
 
 ## LLM selection
 
-Full research, sources and caveats: **[`docs/LLM_RESEARCH.md`](docs/LLM_RESEARCH.md)** (researched 2026-11-25 from official provider pages; no benchmarks were run).
+Full research, sources and caveats: **[`docs/LLM_RESEARCH.md`](docs/LLM_RESEARCH.md)** (researched 2026-11-25 from official Groq pages; no benchmarks were run).
 
-| | OpenAI | Gemini | Anthropic |
+| | **Groq GPT-OSS 120B** | Groq GPT-OSS 20B | Groq Qwen 3.8 27B |
 |---|---|---|---|
-| Model | GPT-6.1 Terra | **Gemini 3.8 Flash** | Claude Sonnet 5.5 |
-| Input / output per 1M tokens | $1.00 / $5.00 | **$0.75 / $3.75** until 2026-12-31, then $1.50 / $7.50 | $2.00 / $10.00 |
-| Context | 1,050,000 | 1,048,576 | 1,000,000 |
-| Structured JSON | Yes | Yes (`responseJsonSchema`) | Yes |
-| Free API tier | not stated | **yes** | not stated |
+| Model ID | **`openai/gpt-oss-120b`** | `openai/gpt-oss-20b` | `qwen/qwen3.8-27b` (preview) |
+| Input / output per 1M tokens | **$0.15 / $0.60** | $0.075 / $0.30 | $0.80 / $4.00 |
+| Context | 131,072 | 131,072 | 131,072 |
+| Max output | 65,536 | 65,536 | 16,384 |
+| Structured JSON (strict) | Yes | Yes | Yes |
 
-**Selected:** primary **`gemini-3.8-flash`**; fallback recommendation **`gpt-6.1-terra`**; budget option `gemini-3.5-flash-lite`.
-Reasons: right quality tier for structured business analysis, free tier for the author/reviewers, native JSON-Schema output over plain REST,
-and a per-analysis cost of a few cents. Only the Gemini adapter is implemented; the abstraction makes adding another a small change.
+**Selected:** primary **`openai/gpt-oss-120b`**; fallback **`openai/gpt-oss-20b`** (half the cost, ~2× faster).
+Reasons: a high-capability model at a low per-analysis cost, native strict JSON-Schema output over the OpenAI-compatible REST API,
+and a 131K context window. Only the Groq adapter is implemented; the abstraction makes adding another provider a small change.
 
 ## Token-cost calculation
 
@@ -321,18 +321,16 @@ and a per-analysis cost of a few cents. Only the Gemini adapter is implemented; 
 
 | Model | Per analysis | Per 1,000 |
 |---|---|---|
-| Gemini 3.8 Flash (to 2026-12-31) | ≈ $0.026 | ≈ $26 |
-| Gemini 3.8 Flash (from 2027-01-01) | ≈ $0.053 | ≈ $53 |
-| GPT-6.1 Terra (fallback) | ≈ $0.035 | ≈ $35 |
-| Claude Sonnet 5.5 | ≈ $0.070 | ≈ $70 |
-| Gemini 3.5 Flash-Lite / Haiku 5.5 / GPT-6 Luna | ≈ $0.0155 / $0.0035 / $0.0035 | ≈ $15.5 / $3.5 / $3.5 |
+| **Groq GPT-OSS 120B** ($0.15 / $0.60) | ≈ $0.0045 | ≈ $4.50 |
+| Groq GPT-OSS 20B ($0.075 / $0.30) | ≈ $0.00225 | ≈ $2.25 |
+| Groq Qwen 3.8 27B ($0.80 / $4.00) | ≈ $0.028 | ≈ $28 |
 
 These are **estimates, not billing data**. Optional Tavily research costs 2 search credits per uncached analysis, reported separately.
 
 ## Cost optimization strategies
 
 HTML cleaning and de-duplication before the LLM · hard caps on extracted text, prompt text and output tokens · bounded schema list sizes ·
-compact evidence-only prompts · mid-tier model with `thinking_level=low` · **one** LLM call (at most one repair) · URL-keyed result cache ·
+compact evidence-only prompts · mid-tier model on Groq's fast inference · **one** LLM call (at most one repair) · URL-keyed result cache ·
 research only when configured · per-client rate limit. Details in the research doc §6.
 
 ## Security considerations
@@ -381,7 +379,7 @@ Errors use one envelope: `{"success": false, "error": {"code", "message", "detai
 
 1. Push the repository to GitHub.
 2. Render dashboard → **New → Blueprint** → select the repo (`render.yaml` is picked up).
-3. Set the secret `GEMINI_API_KEY` (and optionally `TAVILY_API_KEY`) in the service's environment.
+3. Set the secret `GROQ_API_KEY` (and optionally `TAVILY_API_KEY`) in the service's environment.
 4. Deploy. The container listens on `0.0.0.0:$PORT`; health check path is `/health`.
 5. Verify `https://<service>.onrender.com/health` and `/docs`, then put the URL at the top of this README.
 
@@ -391,8 +389,8 @@ Docker locally: `docker build -t ai-link-analysis-api . && docker run --rm -p 40
 
 ## Future improvements
 
-* Add the fallback provider (OpenAI / Anthropic adapters) and automatic provider failover.
-* Gemini **Grounding with Google Search** for source-backed competitor research without a separate search API.
+* Add a fallback provider (e.g. a second Groq model or another vendor adapter) and automatic provider failover.
+* Groq's **browser search** built-in tool for source-backed competitor research without a separate search API.
 * A keyword-data provider so search volume/difficulty can be reported with real data.
 * Headless-browser rendering for JavaScript-only sites (behind the same SSRF controls).
 * Multi-page crawl of key internal pages (services, about); Redis-backed cache and rate limiter; async job mode for long analyses.

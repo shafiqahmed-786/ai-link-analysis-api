@@ -12,7 +12,7 @@ from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: Default model per provider (see docs/LLM_RESEARCH.md for the selection rationale).
-DEFAULT_MODELS: dict[str, str] = {"gemini": "gemini-3.8-flash"}
+DEFAULT_MODELS: dict[str, str] = {"groq": "openai/gpt-oss-120b"}
 
 
 class Settings(BaseSettings):
@@ -32,13 +32,13 @@ class Settings(BaseSettings):
     max_request_bytes: int = Field(default=8192, ge=256)
 
     # --- LLM --------------------------------------------------------------
-    llm_provider: str = "gemini"
+    llm_provider: str = "groq"
     llm_model: str = ""  # blank -> DEFAULT_MODELS[llm_provider]
-    gemini_api_key: SecretStr | None = None
+    groq_api_key: SecretStr | None = None
+    groq_base_url: str = "https://api.groq.com/openai/v1"
     llm_timeout: float = Field(default=90.0, gt=0, le=300)
     llm_max_retries: int = Field(default=2, ge=0, le=5)  # retries after the first attempt
     llm_max_output_tokens: int = Field(default=8192, ge=1024, le=65536)
-    llm_thinking_level: str = "low"  # low | medium | high; blank omits the parameter
     llm_temperature: float | None = Field(default=None, ge=0, le=2)  # None -> provider default
     llm_prompt_max_chars: int = Field(default=24000, ge=2000)  # cleaned page text sent to the LLM
     llm_input_price_per_mtok: float | None = Field(default=None, ge=0)
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = Field(default=900, ge=0)  # 0 disables the in-memory cache
     cache_max_entries: int = Field(default=128, ge=1)
 
-    @field_validator("gemini_api_key", "tavily_api_key", mode="before")
+    @field_validator("groq_api_key", "tavily_api_key", mode="before")
     @classmethod
     def _blank_secret_is_none(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -75,7 +75,7 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("llm_provider", "llm_thinking_level", mode="after")
+    @field_validator("llm_provider", mode="after")
     @classmethod
     def _normalize_choice(cls, value: str) -> str:
         return value.strip().lower()
@@ -88,7 +88,7 @@ class Settings(BaseSettings):
 
     @property
     def has_llm_key(self) -> bool:
-        return self.llm_provider == "gemini" and self.gemini_api_key is not None
+        return self.llm_provider == "groq" and self.groq_api_key is not None
 
     @property
     def has_research_key(self) -> bool:
@@ -96,7 +96,7 @@ class Settings(BaseSettings):
 
     def secret_values(self) -> list[str]:
         """Non-empty secret values, used by the log redaction filter."""
-        secrets = (self.gemini_api_key, self.tavily_api_key)
+        secrets = (self.groq_api_key, self.tavily_api_key)
         return [s.get_secret_value() for s in secrets if s is not None and s.get_secret_value()]
 
 
