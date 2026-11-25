@@ -1,0 +1,23 @@
+# Render blueprint. Secrets (sync: false) are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: ai-link-analysis-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: TRUST_PROXY_HEADERS   # Render terminates TLS and forwards the client IP
+        value: "true"
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: LLM_MODEL
+        value: gemini-3.8-flash
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "10"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY        # optional: enables source-backed competitor research
+        sync: false
